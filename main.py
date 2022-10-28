@@ -34,7 +34,7 @@ def main():
         # revision=model_args.model_revision,
     )
 
-    device = torch.device("cpu")
+    device = torch.device("cuda:3")
 
 
     model = BertForSequenceClassification.from_pretrained(
