@@ -34,12 +34,13 @@ def main():
         # revision=model_args.model_revision,
     )
 
-    device = torch.device("cuda:3")
+    device = torch.device("cpu")
 
 
     model = BertForSequenceClassification.from_pretrained(
         model_ckpt,
         config=config,
+        tuning_mode='ssf',
         # revision=model_args.model_revision,
     ).to(device)
 

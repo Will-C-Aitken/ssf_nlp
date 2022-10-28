@@ -118,12 +118,12 @@ class BertPreTrainedModel(PreTrainedModel):
 
 
 class BertForSequenceClassification(BertPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode=None):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
 
-        self.bert = BertModel(config)
+        self.bert = BertModel(config, tuning_mode)
         classifier_dropout = (
             config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
         )
@@ -218,12 +218,12 @@ class BertModel(BertPreTrainedModel):
     `add_cross_attention` set to `True`; an `encoder_hidden_states` is then expected as an input to the forward pass.
     """
 
-    def __init__(self, config, add_pooling_layer=True):
+    def __init__(self, config, add_pooling_layer=True, tuning_mode=None):
         super().__init__(config)
         self.config = config
 
-        self.embeddings = BertEmbeddings(config)
-        self.encoder = BertEncoder(config)
+        self.embeddings = BertEmbeddings(config, tuning_mode)
+        self.encoder = BertEncoder(config, tuning_mode)
 
         self.pooler = BertPooler(config) if add_pooling_layer else None
 
@@ -377,7 +377,7 @@ class BertModel(BertPreTrainedModel):
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode=None):
         super().__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
@@ -393,6 +393,14 @@ class BertEmbeddings(nn.Module):
         self.register_buffer(
             "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
         )
+
+        self.tuning_mode = tuning_mode
+        if tuning_mode == 'ssf':
+            self.ssf_scale_we, self.ssf_shift_we = \
+                init_ssf_scale_shift(config.hidden_size)
+            self.ssf_scale_ln, self.ssf_shift_ln = \
+                init_ssf_scale_shift(config.hidden_size)
+
 
     def forward(
         self,
@@ -424,7 +432,12 @@ class BertEmbeddings(nn.Module):
                 token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
 
         if inputs_embeds is None:
-            inputs_embeds = self.word_embeddings(input_ids)
+            if self.tuning_mode == 'ssf':
+                inputs_embeds = do_ssf(self.word_embeddings(input_ids),
+                        self.ssf_scale_we, self.ssf_shift_we)
+            else:
+                inputs_embeds = self.word_embeddings(input_ids)
+            
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = inputs_embeds + token_type_embeddings
@@ -432,12 +445,16 @@ class BertEmbeddings(nn.Module):
             position_embeddings = self.position_embeddings(position_ids)
             embeddings += position_embeddings
         embeddings = self.LayerNorm(embeddings)
+
+        if self.tuning_mode == 'ssf':
+            embeddings = do_ssf(embeddings, self.ssf_scale_ln, 
+                    self.ssf_shift_ln)
         embeddings = self.dropout(embeddings)
         return embeddings
 
 
 class BertSelfAttention(nn.Module):
-    def __init__(self, config, position_embedding_type=None):
+    def __init__(self, config, position_embedding_type=None, tuning_mode=None):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
@@ -452,6 +469,16 @@ class BertSelfAttention(nn.Module):
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
+
+        self.tuning_mode = tuning_mode
+
+        if tuning_mode == 'ssf':
+            self.ssf_scale_q, self.ssf_shift_q = \
+                init_ssf_scale_shift(config.hidden_size)
+            self.ssf_scale_k, self.ssf_shift_k = \
+                init_ssf_scale_shift(config.hidden_size)
+            self.ssf_scale_v, self.ssf_shift_v = \
+                init_ssf_scale_shift(config.hidden_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
         self.position_embedding_type = position_embedding_type or getattr(
@@ -478,7 +505,13 @@ class BertSelfAttention(nn.Module):
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.Tensor]:
-        mixed_query_layer = self.query(hidden_states)
+
+        if self.tuning_mode == 'ssf':
+            mixed_query_layer = do_ssf(self.query(hidden_states),
+                    self.ssf_scale_q, self.ssf_shift_q)
+        else:
+            mixed_query_layer = self.query(hidden_states)
+            
 
         # If this is instantiated as a cross-attention module, the keys
         # and values come from an encoder; the attention mask needs to be
@@ -500,8 +533,16 @@ class BertSelfAttention(nn.Module):
             key_layer = torch.cat([past_key_value[0], key_layer], dim=2)
             value_layer = torch.cat([past_key_value[1], value_layer], dim=2)
         else:
-            key_layer = self.transpose_for_scores(self.key(hidden_states))
-            value_layer = self.transpose_for_scores(self.value(hidden_states))
+            if self.tuning_mode == 'ssf':
+                key_layer = self.transpose_for_scores(do_ssf(
+                        self.key(hidden_states), self.ssf_scale_k,
+                        self.ssf_shift_k))
+                value_layer = self.transpose_for_scores(do_ssf(
+                        self.value(hidden_states), self.ssf_scale_v,
+                        self.ssf_shift_v))
+            else:
+                key_layer = self.transpose_for_scores(self.key(hidden_states))
+                value_layer = self.transpose_for_scores(self.value(hidden_states))
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
 
@@ -564,25 +605,45 @@ class BertSelfAttention(nn.Module):
 
 
 class BertSelfOutput(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode=None):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
+        self.tuning_mode = tuning_mode
+
+        if tuning_mode == 'ssf':
+            self.ssf_scale_dense, self.ssf_shift_dense = \
+                init_ssf_scale_shift(config.hidden_size)
+            self.ssf_scale_ln, self.ssf_shift_ln = \
+                init_ssf_scale_shift(config.hidden_size)
+
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
+        if self.tuning_mode == 'ssf':
+            hidden_states = do_ssf(hidden_states, self.ssf_scale_dense, 
+                    self.ssf_shift_dense)
+
         hidden_states = self.dropout(hidden_states)
+
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        if self.tuning_mode == 'ssf':
+            hidden_states = do_ssf(hidden_states, self.ssf_scale_ln, 
+                    self.ssf_shift_ln)
+
         return hidden_states
 
 
 class BertAttention(nn.Module):
-    def __init__(self, config, position_embedding_type=None):
+    def __init__(self, config, position_embedding_type=None, tuning_mode=None):
         super().__init__()
-        self.self = BertSelfAttention(config, position_embedding_type=position_embedding_type)
-        self.output = BertSelfOutput(config)
+        self.self = BertSelfAttention(config,
+                position_embedding_type=position_embedding_type,
+                tuning_mode=tuning_mode)
+        self.output = BertSelfOutput(config, tuning_mode=tuning_mode)
         self.pruned_heads = set()
+
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -627,7 +688,7 @@ class BertAttention(nn.Module):
 
 
 class BertIntermediate(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode=None):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         if isinstance(config.hidden_act, str):
@@ -635,40 +696,62 @@ class BertIntermediate(nn.Module):
         else:
             self.intermediate_act_fn = config.hidden_act
 
+        self.tuning_mode = tuning_mode
+        if tuning_mode == 'ssf':
+            self.ssf_scale_dense, self.ssf_shift_dense = \
+                init_ssf_scale_shift(config.hidden_size)
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
+        if self.tuning_mode == 'ssf':
+            hidden_states = do_ssf(hidden_states, self.ssf_scale_dense,
+                    self.ssf_shift_dense)
         hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
 
 
 class BertOutput(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode=None):
         super().__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
+        self.tuning_mode = tuning_mode
+        if tuning_mode == 'ssf':
+            self.ssf_scale_dense, self.ssf_shift_dense = \
+                init_ssf_scale_shift(config.hidden_size)
+            self.ssf_scale_ln, self.ssf_shift_ln = \
+                init_ssf_scale_shift(config.hidden_size)
+
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
+        if self.tuning_mode == 'ssf':
+            hidden_states = do_ssf(hidden_states, self.ssf_scale_dense,
+                    self.ssf_shift_dense)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        if self.tuning_mode == 'ssf':
+            hidden_states = do_ssf(hidden_states, self.ssf_scale_ln,
+                    self.ssf_shift_ln)
         return hidden_states
 
 
 class BertLayer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode=None):
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
-        self.attention = BertAttention(config)
+
+        self.attention = BertAttention(config, tuning_mode=tuning_mode)
         self.is_decoder = config.is_decoder
         self.add_cross_attention = config.add_cross_attention
         if self.add_cross_attention:
             if not self.is_decoder:
                 raise ValueError(f"{self} should be used as a decoder model if cross attention is added")
             self.crossattention = BertAttention(config, position_embedding_type="absolute")
-        self.intermediate = BertIntermediate(config)
-        self.output = BertOutput(config)
+        self.intermediate = BertIntermediate(config, tuning_mode=tuning_mode)
+        self.output = BertOutput(config, tuning_mode=tuning_mode)
 
     def forward(
         self,
@@ -742,10 +825,11 @@ class BertLayer(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, tuning_mode = None):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
+
+        self.layer = nn.ModuleList([BertLayer(config, tuning_mode) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     def forward(
@@ -852,4 +936,17 @@ class BertPooler(nn.Module):
         pooled_output = self.activation(pooled_output)
         return pooled_output
 
+
+def init_ssf_scale_shift(dim):
+    scale = nn.Parameter(torch.ones(dim))
+    shift = nn.Parameter(torch.zeros(dim))
+
+    nn.init.normal_(scale, mean=1, std=.02)
+    nn.init.normal_(shift, std=0.2)
+
+    return scale, shift
+
+
+def do_ssf(x, scale, shift):
+    return x * scale + shift
 
