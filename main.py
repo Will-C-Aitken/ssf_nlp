@@ -1,5 +1,5 @@
 from ssf_model import BertForSequenceClassification
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer, AutoConfig, EvalPrediction, \
         Trainer, TrainingArguments
 import torch
@@ -40,7 +40,7 @@ def main():
     model = BertForSequenceClassification.from_pretrained(
         model_ckpt,
         config=config,
-        tuning_mode='ssf',
+        # tuning_mode='ssf',
         # revision=model_args.model_revision,
     ).to(device)
 
@@ -69,8 +69,8 @@ def main():
             model=model, 
             args=training_args,
             compute_metrics=compute_metrics,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation_matched"],
+            train_dataset=Dataset.from_dict(dataset["train"][:64]),
+            eval_dataset=Dataset.from_dict(dataset["validation_matched"][:64]),
             tokenizer=tokenizer)
 
     trainer.train()
@@ -78,7 +78,7 @@ def main():
 
 def compute_metrics(p: EvalPrediction):
     preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
-    preds = np.squeeze(preds) if self.is_regression else np.argmax(preds, axis=1)
+    preds = np.argmax(preds, axis=1)
     return {"accuracy": (preds == p.label_ids).astype(np.float32).mean().item()}
 
 
