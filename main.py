@@ -2,6 +2,7 @@ from ssf_model import BertForSequenceClassification
 from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer, AutoConfig, EvalPrediction, \
         Trainer, TrainingArguments
+import numpy as np
 import torch
 
 def main():
@@ -48,7 +49,7 @@ def main():
     model = BertForSequenceClassification.from_pretrained(
         model_ckpt,
         config=config,
-        # tuning_mode='ssf',
+        tuning_mode='ssf',
         # revision=model_args.model_revision,
     ).to(device)
 
@@ -69,7 +70,7 @@ def main():
             log_level="error",
             evaluation_strategy="epoch",
             save_strategy="epoch",
-            metric_for_best_model="eval_f1",
+            #metric_for_best_model="eval_f1",
             #load_best_model_at_end=args.early_stopping
     )
 

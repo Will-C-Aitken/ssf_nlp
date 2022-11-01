@@ -166,11 +166,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
             return_dict=return_dict,
         )
 
-        print(outputs)
-        print(type(outputs))
         pooled_output = outputs[1]
-        print(type(pooled_output))
-        print(pooled_output)
 
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
@@ -703,7 +699,7 @@ class BertIntermediate(nn.Module):
         self.tuning_mode = tuning_mode
         if tuning_mode == 'ssf':
             self.ssf_scale_dense, self.ssf_shift_dense = \
-                init_ssf_scale_shift(config.hidden_size)
+                init_ssf_scale_shift(config.intermediate_size)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
