@@ -8,9 +8,9 @@ def main():
 
     model_ckpt = 'bert-base-uncased'
 
-    train_dataset = load_dataset('glue', 'mnli', split=['train'])[0]
+    train_dataset = load_dataset('glue', 'mnli', split=['train[:64]'])[0]
     val_dataset = load_dataset('glue', 'mnli',
-            split=['validation_matched'])[0]
+            split=['validation_matched[:64]'])[0]
     tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 
     label_list = train_dataset.features["label"].names

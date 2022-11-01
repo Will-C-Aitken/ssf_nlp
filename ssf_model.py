@@ -123,7 +123,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
         self.num_labels = config.num_labels
         self.config = config
 
-        self.bert = BertModel(config, tuning_mode)
+        self.bert = BertModel(config, tuning_mode=tuning_mode)
         classifier_dropout = (
             config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
         )
@@ -167,8 +167,10 @@ class BertForSequenceClassification(BertPreTrainedModel):
         )
 
         print(outputs)
-
+        print(type(outputs))
         pooled_output = outputs[1]
+        print(type(pooled_output))
+        print(pooled_output)
 
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
