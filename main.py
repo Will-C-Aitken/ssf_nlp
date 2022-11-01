@@ -8,17 +8,25 @@ def main():
 
     model_ckpt = 'bert-base-uncased'
 
-    dataset = load_dataset('glue', 'mnli')
+    train_dataset = load_dataset('glue', 'mnli', split=['train'])[0]
+    val_dataset = load_dataset('glue', 'mnli',
+            split=['validation_matched'])[0]
     tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 
-    label_list = dataset["train"].features["label"].names
+    label_list = train_dataset.features["label"].names
     num_labels = len(label_list)
     label2id = {l: i for i, l in enumerate(label_list)}
     id2label = {id: label for label, id in label2id.items()}
 
     sentence1_key, sentence2_key = ("premise", "hypothesis")
 
-    dataset = dataset.map(
+    train_dataset = train_dataset.map(
+        lambda examples: tokenizer(*((examples["premise"], 
+            examples["hypothesis"])), padding=False,
+            truncation=True),
+        batched=True)
+
+    val_dataset = val_dataset.map(
         lambda examples: tokenizer(*((examples["premise"], 
             examples["hypothesis"])), padding=False,
             truncation=True),
@@ -45,7 +53,7 @@ def main():
     ).to(device)
 
     batch_size = 16
-    logging_steps = len(dataset["train"]) // batch_size
+    logging_steps = len(train_dataset) // batch_size
 
     training_args = TrainingArguments(
             output_dir="training_save_data",
@@ -69,8 +77,8 @@ def main():
             model=model, 
             args=training_args,
             compute_metrics=compute_metrics,
-            train_dataset=Dataset.from_dict(dataset["train"][:64]),
-            eval_dataset=Dataset.from_dict(dataset["validation_matched"][:64]),
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
             tokenizer=tokenizer)
 
     trainer.train()

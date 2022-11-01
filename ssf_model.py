@@ -166,6 +166,8 @@ class BertForSequenceClassification(BertPreTrainedModel):
             return_dict=return_dict,
         )
 
+        print(outputs)
+
         pooled_output = outputs[1]
 
         pooled_output = self.dropout(pooled_output)
